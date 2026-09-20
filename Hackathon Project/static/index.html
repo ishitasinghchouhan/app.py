@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Broski AI Assistant</title>
+<style>
+  :root{
+    --accent:#00d9ff; --accent2:#0066ff;
+    --text:#eaf4ff; --muted:#8ba9c7;
+    --panel:rgba(255,255,255,0.06); --line:rgba(0,217,255,0.22);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif}
+  body{min-height:100vh;color:var(--text);display:flex;justify-content:center;
+       background:radial-gradient(circle at center,#102a43 0%,#050b14 45%,#020409 100%)}
+  .container{width:100%;max-width:560px;padding:28px 18px 50px;display:flex;
+             flex-direction:column;align-items:center;text-align:center}
+  h1{font-size:clamp(22px,6vw,30px);letter-spacing:3px}
+  .sub{margin-top:6px;color:var(--muted);font-size:13px}
+
+  .ai-core{width:200px;height:200px;border-radius:50%;display:flex;justify-content:center;
+           align-items:center;position:relative;margin:28px 0 10px}
+  .ai-core::before,.ai-core::after{content:"";position:absolute;border-radius:50%;border:2px solid var(--accent)}
+  .ai-core::before{width:200px;height:200px;opacity:.25;animation:rotate 8s linear infinite}
+  .ai-core::after{width:170px;height:170px;opacity:.5;animation:rotateRev 5s linear infinite}
+  .orb{width:120px;height:120px;border-radius:50%;z-index:2;display:flex;
+       justify-content:center;align-items:center;font-size:42px;
+       background:radial-gradient(circle at 35% 30%,#fff,var(--accent) 12%,var(--accent2) 45%,#08152c 75%);
+       box-shadow:0 0 25px var(--accent),0 0 60px #0077ff}
+  .busy .orb{animation:pulse .8s infinite alternate}
+  .busy .ai-core::before{animation-duration:2s;opacity:.9}
+  .busy .ai-core::after{animation-duration:1.5s;opacity:1}
+
+  .status{margin-top:18px;font-size:16px;color:var(--muted);min-height:24px}
+  .log{margin-top:16px;width:100%;max-height:44vh;overflow-y:auto;
+       display:flex;flex-direction:column;gap:10px}
+  .msg{padding:12px 14px;border-radius:14px;font-size:15px;line-height:1.5;
+       text-align:left;white-space:pre-wrap;word-wrap:break-word}
+  .msg.you{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
+           align-self:flex-end;max-width:85%}
+  .msg.ai{background:var(--panel);border:1px solid var(--line);align-self:flex-start;max-width:95%}
+
+  .row{margin-top:18px;display:flex;gap:10px;width:100%;align-items:center}
+  input[type=text]{flex:1;padding:14px 16px;border-radius:30px;border:1px solid var(--line);
+                   background:var(--panel);color:var(--text);font-size:15px;outline:none}
+  input[type=text]:focus{border-color:var(--accent)}
+  button{border:none;cursor:pointer;color:#fff;border-radius:50%;width:54px;height:54px;
+         font-size:22px;flex:none;transition:.2s;
+         background:linear-gradient(135deg,var(--accent),var(--accent2))}
+  button:hover{transform:scale(1.07)}
+  button:disabled{opacity:.4;cursor:not-allowed;transform:none}
+  .hint{margin-top:14px;color:var(--muted);font-size:12px;line-height:1.6}
+
+  @keyframes pulse{from{transform:scale(1)}to{transform:scale(1.12)}}
+  @keyframes rotate{to{transform:rotate(360deg)}}
+  @keyframes rotateRev{from{transform:rotate(360deg)}to{transform:rotate(0)}}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  @media(max-width:450px){
+    .ai-core,.ai-core::before{width:165px;height:165px}
+    .ai-core::after{width:140px;height:140px}
+    .orb{width:100px;height:100px;font-size:34px}
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>BROSKI A.I</h1>
+  <div class="sub">Voice controlled assistant</div>
+
+  <div class="ai-core" id="core"><div class="orb"><span>🤖</span></div></div>
+  <div class="status" id="status">Tap the mic or type a message</div>
+
+  <div class="log" id="log"></div>
+
+  <div class="row">
+    <input type="text" id="box" placeholder="Type a command or question…" autocomplete="off">
+    <button id="send" title="Send">➤</button>
+    <button id="mic" title="Speak">🎙️</button>
+  </div>
+
+  <div class="hint">Try: "what time is it" · "open youtube" · or ask anything</div>
+</div>
+
+<script>
+const core   = document.getElementById('core');
+const status = document.getElementById('status');
+const log    = document.getElementById('log');
+const box    = document.getElementById('box');
+const micBtn = document.getElementById('mic');
+const sendBtn= document.getElementById('send');
+
+let history = [];   // [{role, content}] sent to the backend each turn
+
+function setStatus(t){ status.textContent = t; }
+function busy(on){ core.classList.toggle('busy', on); }
+
+function add(who, text){
+  const d = document.createElement('div');
+  d.className = 'msg ' + (who === 'you' ? 'you' : 'ai');
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+/* ---------- speech in ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;
+
+if (SR) {
+  rec = new SR();
+  rec.lang = 'en-IN';
+  rec.continuous = false;
+  rec.interimResults = false;
+
+  rec.onresult = e => { busy(false); handle(e.results[0][0].transcript); };
+  rec.onerror  = e => { busy(false); setStatus('Microphone problem: ' + e.error); };
+  rec.onend    = () => busy(false);
+
+  micBtn.onclick = () => {
+    try {
+      speechSynthesis.cancel();
+      rec.start();
+      busy(true);
+      setStatus('🎧 Listening…');
+    } catch (err) { console.log(err); }
+  };
+} else {
+  micBtn.disabled = true;
+  setStatus('This browser has no voice input. Typing works.');
+}
+
+/* ---------- speech out ---------- */
+function speak(text){
+  if (!('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-IN';
+  u.rate = 0.98;
+  u.onstart = () => { busy(true);  setStatus('🔊 Speaking…'); };
+  u.onend   = () => { busy(false); setStatus('Tap the mic or type a message'); };
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+/* ---------- send to backend ---------- */
+async function handle(text){
+  text = (text || '').trim();
+  if (!text) return;
+
+  add('you', text);
+  box.value = '';
+  busy(true);
+  setStatus('🤔 Thinking…');
+  const bubble = add('ai', 'Thinking…');
+
+  try {
+    const res = await fetch('/api/chat', {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify({ message: text, history: history })
+    });
+    const data = await res.json();
+    const reply = data.reply || 'No answer came back.';
+
+    bubble.textContent = reply;
+    log.scrollTop = log.scrollHeight;
+
+    if (data.open_url) window.open(data.open_url, '_blank');
+
+    history.push({ role: 'user', content: text });
+    history.push({ role: 'assistant', content: reply });
+    if (history.length > 20) history = history.slice(-20);
+
+    busy(false);
+    speak(reply);
+  } catch (err) {
+    busy(false);
+    bubble.textContent = 'The server is not reachable. Check that app.py is running.';
+    setStatus('Tap the mic or type a message');
+  }
+}
+
+sendBtn.onclick = () => handle(box.value);
+box.addEventListener('keydown', e => { if (e.key === 'Enter') handle(box.value); });
+</script>
+</body>
+</html>
